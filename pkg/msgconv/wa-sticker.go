@@ -44,6 +44,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
@@ -165,15 +166,21 @@ func (mc *MessageConverter) DownloadImagePack(ctx context.Context, userLoginID n
 		dbKey := database.Key(fmt.Sprintf("stickercache:%x", part.Info.BridgedSticker.ID))
 		fixStickerDimensions(part.Info)
 		var packed *event.ImagePackImage
-		if mc.DirectMedia {
+		var directMediaURL id.ContentURIString
+		useDirectMedia := mc.DirectMedia
+		if useDirectMedia {
+			directMediaURL, err = mc.Bridge.Matrix.GenerateContentURI(ctx, waid.MakeStickerPackMediaID(pack.StickerPackID, sticker.FileHash, userLoginID))
+			if err != nil {
+				zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to generate direct media content URI for sticker, reuploading instead")
+				useDirectMedia = false
+			}
+		}
+		if useDirectMedia {
 			dbKey = ""
 			if part.Info.MimeType == "application/was" {
 				part.Info.MimeType = "video/lottie+json"
 			}
-			part.URL, err = mc.Bridge.Matrix.GenerateContentURI(ctx, waid.MakeStickerPackMediaID(pack.StickerPackID, sticker.FileHash, userLoginID))
-			if err != nil {
-				panic(fmt.Errorf("failed to generate content URI: %w", err))
-			}
+			part.URL = directMediaURL
 		} else if cached := mc.Bridge.DB.KV.Get(ctx, dbKey); cached != "" {
 			err = json.Unmarshal([]byte(cached), &packed)
 			if err != nil {
