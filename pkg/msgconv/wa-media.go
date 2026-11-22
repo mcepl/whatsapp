@@ -85,21 +85,28 @@ func (mc *MessageConverter) convertMediaMessage(
 		EncSHA256: msg.GetFileEncSHA256(),
 		MimeType:  msg.GetMimetype(),
 	}
-	if mc.DirectMedia {
+	useDirectMedia := mc.DirectMedia
+	var directMediaURL id.ContentURIString
+	var directMediaFile *event.EncryptedFileInfo
+	if useDirectMedia {
+		var err error
+		portal := getPortal(ctx)
+		idOverride := getEditTargetID(ctx)
+		directMediaURL, directMediaFile, err = portal.Bridge.GenerateContentURI(
+			ctx, portal.MXID, waid.MakeMediaID(messageInfo, idOverride, portal.Receiver, getMediaIDVersion(msg)),
+		)
+		if err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to generate direct media content URI, reuploading instead")
+			useDirectMedia = false
+		}
+	}
+	if useDirectMedia {
 		if preparedMedia.Info.MimeType == "application/was" {
 			preparedMedia.Info.MimeType = "video/lottie+json"
 			preparedMedia.FileName = "sticker.json"
 		}
 		preparedMedia.FillFileName()
-		var err error
-		portal := getPortal(ctx)
-		idOverride := getEditTargetID(ctx)
-		preparedMedia.URL, preparedMedia.File, err = portal.Bridge.GenerateContentURI(
-			ctx, portal.MXID, waid.MakeMediaID(messageInfo, idOverride, portal.Receiver, getMediaIDVersion(msg)),
-		)
-		if err != nil {
-			panic(fmt.Errorf("failed to generate content URI: %w", err))
-		}
+		preparedMedia.URL, preparedMedia.File = directMediaURL, directMediaFile
 		mediaKeys.DirectPath = msg.GetDirectPath()
 		directMediaMeta, err := json.Marshal(mediaKeys)
 		if err != nil {
