@@ -182,7 +182,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			log.Warn().Stringer("jid", jid).Msg("Didn't get info for puppet in background sync")
 			continue
 		}
-		userInfo, err := wa.getUserInfo(ctx, jid, info.PictureID, ghost.AvatarID == "" || (info.PictureID != "" && string(ghost.AvatarID) != info.PictureID))
+		userInfo, err := wa.getUserInfo(ctx, jid, ghost, info.PictureID, ghost.AvatarID == "" || (info.PictureID != "" && string(ghost.AvatarID) != info.PictureID))
 		if err != nil {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get user info for puppet in background sync")
 			continue
@@ -198,18 +198,18 @@ func (wa *WhatsAppClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost
 		return nil, nil
 	}
 	jid := waid.ParseUserID(ghost.ID)
-	return wa.getUserInfo(ctx, jid, "", ghost.AvatarID == "")
+	return wa.getUserInfo(ctx, jid, ghost, "", ghost.AvatarID == "")
 }
 
-func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, avatarID string, fetchAvatar bool) (*bridgev2.UserInfo, error) {
+func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, ghost *bridgev2.Ghost, avatarID string, fetchAvatar bool) (*bridgev2.UserInfo, error) {
 	contact, err := wa.GetStore().Contacts.GetContact(ctx, jid)
 	if err != nil {
 		return nil, err
 	}
-	return wa.contactToUserInfo(ctx, jid, contact, avatarID, fetchAvatar), nil
+	return wa.contactToUserInfo(ctx, jid, ghost, contact, avatarID, fetchAvatar), nil
 }
 
-func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
+func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, ghost *bridgev2.Ghost, contact types.ContactInfo, avatarID string, fetchAvatar bool) *bridgev2.UserInfo {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
 	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
@@ -278,9 +278,23 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 		phone = "+" + altJID.User
 	}
 	ui := &bridgev2.UserInfo{
-		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
 		IsBot:        ptr.Ptr(jid.IsBot()),
 		ExtraUpdates: updateGhostLastSyncAt,
+	}
+	name := wa.Main.Config.FormatDisplayname(jid, phone, contact)
+	nameIsFallback := name == wa.Main.Config.FormatDisplayname(jid, phone, types.ContactInfo{RedactedPhone: contact.RedactedPhone})
+	// Ghosts are shared between logins, but not all logins know the push name of every user
+	if nameIsFallback && ghost != nil && ghost.Name != "" && !ghost.Metadata.(*waid.GhostMetadata).NameIsFallback {
+		if ghost.Name != name {
+			zerolog.Ctx(ctx).Debug().
+				Stringer("jid", jid).
+				Str("current_name", ghost.Name).
+				Str("fallback_name", name).
+				Msg("Not replacing ghost name with fallback name")
+		}
+	} else {
+		ui.Name = &name
+		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, setGhostNameIsFallback(nameIsFallback))
 	}
 	if jid.Server == types.BotServer {
 		ui.Identifiers = []string{}
@@ -293,6 +307,17 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 		ui.ExtraUpdates = bridgev2.MergeExtraUpdaters(ui.ExtraUpdates, wa.fetchGhostAvatar)
 	}
 	return ui
+}
+
+func setGhostNameIsFallback(isFallback bool) bridgev2.ExtraUpdater[*bridgev2.Ghost] {
+	return func(_ context.Context, ghost *bridgev2.Ghost) bool {
+		meta := ghost.Metadata.(*waid.GhostMetadata)
+		if meta.NameIsFallback == isFallback {
+			return false
+		}
+		meta.NameIsFallback = isFallback
+		return true
+	}
 }
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
@@ -448,7 +473,7 @@ func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 		} else if contact, err := contactStore.GetContact(ctx, jid); err != nil {
 			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
 		} else {
-			userInfo := wa.contactToUserInfo(ctx, jid, contact, "", forceAvatarSync || ghost.AvatarID == "")
+			userInfo := wa.contactToUserInfo(ctx, jid, ghost, contact, "", forceAvatarSync || ghost.AvatarID == "")
 			ghost.UpdateInfo(ctx, userInfo)
 			wa.syncAltGhostWithInfo(ctx, jid, ghost)
 		}
@@ -480,7 +505,12 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 			Msg("Failed to get ghost for alternate JID")
 		return
 	}
-	ghost.UpdateInfo(ctx, makeInfoFromGhost(mainGhost))
+	info := makeInfoFromGhost(mainGhost)
+	if mainGhost.Metadata.(*waid.GhostMetadata).NameIsFallback && ghost.Name != "" && !ghost.Metadata.(*waid.GhostMetadata).NameIsFallback {
+		info.Name = nil
+		info.ExtraUpdates = nil
+	}
+	ghost.UpdateInfo(ctx, info)
 	log.Debug().
 		Stringer("jid", jid).
 		Stringer("alternate_jid", altJID).
@@ -494,6 +524,7 @@ func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
 		Name:         &ghost.Name,
 		IsBot:        &ghost.IsBot,
 		ExtraProfile: ghost.ExtraProfile,
+		ExtraUpdates: setGhostNameIsFallback(ghost.Metadata.(*waid.GhostMetadata).NameIsFallback),
 	}
 	if ghost.AvatarID != "" && ghost.AvatarID != "unauthorized" {
 		info.Avatar = &bridgev2.Avatar{
