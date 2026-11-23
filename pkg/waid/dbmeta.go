@@ -137,6 +137,8 @@ type PortalMetadata struct {
 
 type GhostMetadata struct {
 	LastSync jsontime.Unix `json:"last_sync,omitzero"`
+	// True if the name was built only from identifiers like the phone number
+	NameIsFallback bool `json:"name_is_fallback,omitempty"`
 
 	DirectAvatarURL string `json:"direct_avatar_url,omitempty"`
 }
