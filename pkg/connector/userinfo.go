@@ -277,8 +277,11 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 	} else if altJID.Server == types.DefaultUserServer {
 		phone = "+" + altJID.User
 	}
+	name := wa.Main.Config.FormatDisplayname(jid, phone, contact)
 	ui := &bridgev2.UserInfo{
-		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
+		Name: &name,
+		// Ghosts are shared between logins, but not all logins know the push name of every user
+		NameQuality:  wa.Main.Config.displaynameQuality(jid, phone, contact, name),
 		IsBot:        ptr.Ptr(jid.IsBot()),
 		ExtraUpdates: updateGhostLastSyncAt,
 	}
@@ -489,9 +492,12 @@ func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JI
 }
 
 func makeInfoFromGhost(ghost *bridgev2.Ghost) *bridgev2.UserInfo {
+	// Take the name and its quality together, so another sync can't change one without the other
+	name, nameQuality := ghost.GetNameWithQuality()
 	info := &bridgev2.UserInfo{
 		Identifiers:  ghost.Identifiers,
-		Name:         &ghost.Name,
+		Name:         &name,
+		NameQuality:  nameQuality,
 		IsBot:        &ghost.IsBot,
 		ExtraProfile: ghost.ExtraProfile,
 	}
