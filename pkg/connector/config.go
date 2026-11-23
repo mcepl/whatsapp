@@ -10,6 +10,7 @@ import (
 	up "go.mau.fi/util/configupgrade"
 	"go.mau.fi/whatsmeow/types"
 	"gopkg.in/yaml.v3"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/msgconv"
@@ -192,6 +193,29 @@ func (c *Config) FormatDisplayname(jid types.JID, phone string, contact types.Co
 		panic(err)
 	}
 	return name
+}
+
+// displaynameQuality ranks a display name by the contact info fields it was built from.
+// The template is rendered again with fewer fields, so this works with any template.
+// If one of those renders fails, the name is left unranked.
+func (c *Config) displaynameQuality(jid types.JID, phone string, contact types.ContactInfo, name string) database.NameQuality {
+	profileOnly := contact
+	profileOnly.FirstName = ""
+	profileOnly.FullName = ""
+	identifiersOnly := profileOnly
+	identifiersOnly.PushName = ""
+	identifiersOnly.BusinessName = ""
+	if identifierName, err := c.formatDisplayname(jid, phone, identifiersOnly); err != nil {
+		return database.NameQualityUnranked
+	} else if name == identifierName {
+		return database.NameQualityIdentifier
+	}
+	if profileName, err := c.formatDisplayname(jid, phone, profileOnly); err != nil {
+		return database.NameQualityUnranked
+	} else if name == profileName {
+		return database.NameQualityProfile
+	}
+	return database.NameQualityContact
 }
 
 func redactPhone(phone string) string {
