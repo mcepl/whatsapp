@@ -52,3 +52,5 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
 )
+
+replace maunium.net/go/mautrix => github.com/openSUSE-Python/mautrix-go v0.33.1-0.20261124065611-03addd2da600
